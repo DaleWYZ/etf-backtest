@@ -37,6 +37,7 @@ def build():
         "--add-data", f"static{sep}static",
         "--collect-all", "akshare",
         "--collect-all", "py_mini_racer",
+        "--collect-all", "yfinance",
         "--clean",
         "--noconfirm",
         "main.py",

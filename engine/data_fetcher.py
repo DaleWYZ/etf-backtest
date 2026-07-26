@@ -161,58 +161,89 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _fetch_from_akshare(code: str) -> pd.DataFrame:
-    """从 akshare 拉取 ETF 日线数据（多数据源自动切换 + 重试）"""
+    """从多个数据源拉取 ETF 日线数据（先用代理，失败后直连）"""
+    import akshare as ak
+
+    # 数据源列表
+    sources = [
+        # --- akshare 数据源 ---
+        ("东方财富-ETF", lambda: ak.fund_etf_hist_em(symbol=code, period="daily", adjust="qfq")),
+        ("东方财富-A股", lambda: ak.stock_zh_a_hist(
+            symbol=code, period="daily", start_date="19700101", end_date="20991231", adjust="qfq"
+        )),
+        ("新浪财经", lambda: ak.fund_etf_hist_sina(symbol=code)),
+        # --- Yahoo Finance (国际源) ---
+        ("Yahoo Finance", lambda: _fetch_from_yahoo(code)),
+    ]
+
+    # 先走系统代理试所有源
+    logger.info(f"===== 开始获取 {code} (走系统代理) =====")
+    for src_name, fetch_fn in sources:
+        result = _try_source(code, src_name, fetch_fn)
+        if result is not None:
+            return result
+
+    # 代理模式全失败，直连再试
+    logger.info(f"===== 代理模式全部失败，尝试直连 =====")
     with _no_proxy_session():
-        import akshare as ak
-
-        # 数据源列表：按优先级依次尝试
-        sources = [
-            (
-                "东方财富-ETF",
-                lambda: ak.fund_etf_hist_em(symbol=code, period="daily", adjust="qfq"),
-            ),
-            (
-                "东方财富-A股",
-                lambda: ak.stock_zh_a_hist(
-                    symbol=code, period="daily",
-                    start_date="19700101", end_date="20991231",
-                    adjust="qfq"
-                ),
-            ),
-            (
-                "新浪财经",
-                lambda: ak.fund_etf_hist_sina(symbol=code),
-            ),
-        ]
-
         for src_name, fetch_fn in sources:
-            last_error = None
-            for attempt in range(2):
-                try:
-                    logger.info(f"正在获取 {code} 数据 (来源: {src_name})...")
-                    df = fetch_fn()
+            result = _try_source(code, src_name + "(直连)", fetch_fn)
+            if result is not None:
+                return result
 
-                    if df is None or df.empty:
-                        raise ValueError(f"{src_name} 未返回 {code} 的数据")
+    raise RuntimeError(
+        f"无法获取 {code} 的数据，共尝试 {len(sources)*2} 次（代理+直连各一次）。\n"
+        f"请确认: 1) 网络可正常访问互联网  2) ETF代码 {code} 正确"
+    )
 
-                    df = _normalize_df(df)
-                    logger.info(f"成功获取 {code}，共 {len(df)} 条记录 (来源: {src_name})")
-                    return df
 
-                except Exception as e:
-                    last_error = e
-                    logger.warning(f"[{src_name}] 请求失败 (第{attempt+1}/2次): {type(e).__name__}: {e}")
-                    if attempt < 1:
-                        time.sleep(2)
+def _try_source(code: str, src_name: str, fetch_fn) -> pd.DataFrame | None:
+    """尝试从单个数据源获取数据，失败返回 None"""
+    for attempt in range(2):
+        try:
+            logger.info(f"  [{src_name}] 尝试 {code} (第{attempt+1}次)...")
+            df = fetch_fn()
+            if df is not None and not df.empty:
+                df = _normalize_df(df)
+                logger.info(f"  [{src_name}] ✅ 成功! 共 {len(df)} 条记录")
+                return df
+            else:
+                logger.warning(f"  [{src_name}] 返回空数据")
+                return None
+        except Exception as e:
+            logger.warning(f"  [{src_name}] 失败: {type(e).__name__}: {e}")
+            if attempt < 1:
+                time.sleep(1)
+    return None
 
-            logger.warning(f"[{src_name}] 数据源失败，尝试下一个...")
 
-        # 所有数据源都失败
-        raise RuntimeError(
-            f"无法获取 {code} 的数据，已尝试3个数据源均失败。\n"
-            f"请确认: 1) 网络可正常访问互联网  2) ETF代码 {code} 正确\n"
-            f"最后的错误: {type(last_error).__name__}: {last_error}"
-        )
+def _fetch_from_yahoo(code: str) -> pd.DataFrame:
+    """通过 Yahoo Finance 获取 ETF 数据"""
+    import yfinance as yf
+
+    # 判断交易所后缀
+    if code.startswith(("51", "56", "58", "60")):  # 上海
+        ticker = f"{code}.SS"
+    elif code.startswith(("15", "16", "30")):  # 深圳
+        ticker = f"{code}.SZ"
+    else:
+        ticker = code
+
+    logger.info(f"    Yahoo ticker: {ticker}")
+    stock = yf.Ticker(ticker)
+    df = stock.history(period="max")
+
+    if df is None or df.empty:
+        raise ValueError("Yahoo Finance 无此代码数据")
+
+    # 重命名为统一格式
+    df = df.rename(columns={
+        "Open": "open", "High": "high", "Low": "low",
+        "Close": "close", "Volume": "volume",
+    })
+    df.index.name = "date"
+    df = df[["open", "high", "low", "close", "volume"]].copy()
+    return df
 
 
 def get_etf_data(code: str, force_refresh: bool = False) -> pd.DataFrame:
@@ -261,45 +292,43 @@ def search_etf(keyword: str) -> list[dict]:
     """
     搜索 ETF
     """
-    with _no_proxy_session():
-        try:
-            import akshare as ak
+    try:
+        import akshare as ak
 
-            df = ak.fund_etf_category_sina(symbol="ETF基金")
-            if df is None or df.empty:
-                return []
-
-            keyword_lower = keyword.lower()
-            mask = df["名称"].str.contains(keyword, case=False, na=False) | df["代码"].str.contains(
-                keyword, case=False, na=False
-            )
-            matched = df[mask].head(20)
-
-            results = []
-            for _, row in matched.iterrows():
-                results.append(
-                    {
-                        "code": str(row["代码"]),
-                        "name": str(row["名称"]),
-                    }
-                )
-            return results
-        except Exception as e:
-            logger.warning(f"ETF 搜索失败: {e}")
+        df = ak.fund_etf_category_sina(symbol="ETF基金")
+        if df is None or df.empty:
             return []
+
+        keyword_lower = keyword.lower()
+        mask = df["名称"].str.contains(keyword, case=False, na=False) | df["代码"].str.contains(
+            keyword, case=False, na=False
+        )
+        matched = df[mask].head(20)
+
+        results = []
+        for _, row in matched.iterrows():
+            results.append(
+                {
+                    "code": str(row["代码"]),
+                    "name": str(row["名称"]),
+                }
+            )
+        return results
+    except Exception as e:
+        logger.warning(f"ETF 搜索失败: {e}")
+        return []
 
 
 def get_etf_name(code: str) -> str:
     """获取 ETF 名称"""
-    with _no_proxy_session():
-        try:
-            import akshare as ak
+    try:
+        import akshare as ak
 
-            df = ak.fund_etf_category_sina(symbol="ETF基金")
-            if df is not None and not df.empty:
-                row = df[df["代码"] == code]
-                if not row.empty:
-                    return str(row.iloc[0]["名称"])
-        except Exception:
-            pass
+        df = ak.fund_etf_category_sina(symbol="ETF基金")
+        if df is not None and not df.empty:
+            row = df[df["代码"] == code]
+            if not row.empty:
+                return str(row.iloc[0]["名称"])
+    except Exception:
+        pass
     return f"ETF {code}"
