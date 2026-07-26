@@ -129,59 +129,80 @@ def _save_to_cache(code: str, df: pd.DataFrame):
     conn.close()
 
 
+def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+    """标准化 akshare 返回的 DataFrame 列名和格式"""
+    col_map = {
+        "日期": "date", "date": "date",
+        "开盘": "open", "open": "open",
+        "最高": "high", "high": "high",
+        "最低": "low", "low": "low",
+        "收盘": "close", "close": "close",
+        "成交量": "volume", "volume": "volume", "成交数量": "volume",
+    }
+    df.rename(columns=col_map, inplace=True)
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+
+    required_cols = ["date", "open", "high", "low", "close", "volume"]
+    for c in required_cols:
+        if c not in df.columns:
+            if c == "volume":
+                df[c] = 0.0
+            else:
+                raise ValueError(f"缺少必要列: {c}，实际列: {df.columns.tolist()}")
+
+    df = df[required_cols].copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df.set_index("date", inplace=True)
+    df.sort_index(inplace=True)
+    df.dropna(subset=["close"], inplace=True)
+    return df
+
+
 def _fetch_from_akshare(code: str) -> pd.DataFrame:
-    """从 akshare 拉取 ETF 日线数据（带重试）"""
+    """从 akshare 拉取 ETF 日线数据（多数据源自动切换 + 重试）"""
     with _no_proxy_and_retry():
         import akshare as ak
 
-        last_error = None
-        for attempt in range(3):
-            try:
-                logger.info(f"正在从 akshare 获取 {code} 的数据...")
+        # 数据源列表：(名称, 函数, 参数)
+        sources = [
+            (
+                "东方财富",
+                lambda: ak.fund_etf_hist_em(symbol=code, period="daily", adjust="qfq"),
+            ),
+            (
+                "新浪财经",
+                lambda: ak.fund_etf_hist_sina(symbol=code),
+            ),
+        ]
 
-                df = ak.fund_etf_hist_em(symbol=code, period="daily", adjust="qfq")
+        for src_name, fetch_fn in sources:
+            last_error = None
+            for attempt in range(2):
+                try:
+                    logger.info(f"正在获取 {code} 数据 (来源: {src_name})...")
+                    df = fetch_fn()
 
-                if df is None or df.empty:
-                    raise ValueError(f"akshare 未返回 {code} 的数据")
+                    if df is None or df.empty:
+                        raise ValueError(f"{src_name} 未返回 {code} 的数据")
 
-                # 标准化列名
-                col_map = {
-                    "日期": "date", "date": "date",
-                    "开盘": "open", "open": "open",
-                    "最高": "high", "high": "high",
-                    "最低": "low", "low": "low",
-                    "收盘": "close", "close": "close",
-                    "成交量": "volume", "volume": "volume", "成交数量": "volume",
-                }
-                df.rename(columns=col_map, inplace=True)
-                df = df.loc[:, ~df.columns.duplicated()].copy()
+                    df = _normalize_df(df)
+                    logger.info(f"成功获取 {code}，共 {len(df)} 条记录 (来源: {src_name})")
+                    return df
 
-                required_cols = ["date", "open", "high", "low", "close", "volume"]
-                for c in required_cols:
-                    if c not in df.columns:
-                        if c == "volume":
-                            df[c] = 0.0
-                        else:
-                            raise ValueError(f"缺少必要列: {c}，实际列: {df.columns.tolist()}")
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"[{src_name}] 请求失败 (第{attempt+1}/2次): {type(e).__name__}: {e}")
+                    if attempt < 1:
+                        time.sleep(2)
 
-                df = df[required_cols].copy()
-                df["date"] = pd.to_datetime(df["date"])
-                df.set_index("date", inplace=True)
-                df.sort_index(inplace=True)
-                df.dropna(subset=["close"], inplace=True)
+            logger.warning(f"[{src_name}] 数据源失败，尝试下一个...")
 
-                logger.info(f"成功获取 {code}，共 {len(df)} 条记录")
-                return df
-
-            except Exception as e:
-                last_error = e
-                if attempt < 2:
-                    wait = (attempt + 1) * 2
-                    logger.warning(f"请求失败 (第{attempt+1}/3次): {e}，{wait}秒后重试...")
-                    time.sleep(wait)
-
-        logger.error(f"获取 {code} 数据失败 (已重试3次): {last_error}")
-        raise last_error
+        # 所有数据源都失败
+        raise RuntimeError(
+            f"无法获取 {code} 的数据。已尝试: 东方财富、新浪财经。\n"
+            f"请确认: 1) 网络可正常访问互联网  2) ETF代码 {code} 正确\n"
+            f"最后的错误: {type(last_error).__name__}: {last_error}"
+        )
 
 
 def get_etf_data(code: str, force_refresh: bool = False) -> pd.DataFrame:

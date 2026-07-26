@@ -5,6 +5,17 @@
 
 import os
 import sys
+
+# ⚠️ 必须在所有 HTTP 相关库导入之前清除代理设置
+# 否则 urllib3/requests 会缓存系统代理配置
+_proxy_vars = [
+    "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+    "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+]
+for _pv in _proxy_vars:
+    os.environ.pop(_pv, None)
+os.environ["NO_PROXY"] = "*"
+
 import threading
 import webbrowser
 import logging
