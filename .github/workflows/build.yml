@@ -23,7 +23,7 @@ jobs:
 
       - name: 打包 EXE
         run: |
-          pyinstaller --onefile --windowed --name "ETF回测工具" --add-data "static;static" main.py
+          pyinstaller --onefile --windowed --name "ETF回测工具" --add-data "static;static" --collect-all akshare main.py
 
       - name: 上传 EXE
         uses: actions/upload-artifact@v4

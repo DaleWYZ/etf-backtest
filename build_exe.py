@@ -35,6 +35,7 @@ def build():
         "--windowed",
         "--name", "ETF回测工具",
         "--add-data", f"static{sep}static",
+        "--collect-all", "akshare",
         "--clean",
         "--noconfirm",
         "main.py",
