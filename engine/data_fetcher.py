@@ -3,6 +3,7 @@
 import os
 import sqlite3
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 import pandas as pd
 
@@ -12,6 +13,22 @@ logger = logging.getLogger(__name__)
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".etf_backtest")
 CACHE_DB = os.path.join(CACHE_DIR, "etf_cache.db")
 CACHE_TTL_HOURS = 24  # 缓存有效期
+
+# 需要清除的代理环境变量（避免走不可用的本地代理）
+_PROXY_ENV_VARS = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"]
+
+
+@contextmanager
+def _no_proxy():
+    """临时清除代理环境变量（akshare/requests 会读取这些变量）"""
+    saved = {}
+    for var in _PROXY_ENV_VARS:
+        if var in os.environ:
+            saved[var] = os.environ.pop(var)
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
 
 
 def _ensure_cache_dir():
@@ -110,52 +127,50 @@ def _save_to_cache(code: str, df: pd.DataFrame):
 
 def _fetch_from_akshare(code: str) -> pd.DataFrame:
     """从 akshare 拉取 ETF 日线数据"""
-    try:
-        import akshare as ak
+    with _no_proxy():
+        try:
+            import akshare as ak
 
-        logger.info(f"正在从 akshare 获取 {code} 的数据...")
+            logger.info(f"正在从 akshare 获取 {code} 的数据...")
 
-        # akshare 的 stock_zh_a_hist 支持 ETF
-        df = ak.fund_etf_hist_em(symbol=code, period="daily", adjust="qfq")
+            df = ak.fund_etf_hist_em(symbol=code, period="daily", adjust="qfq")
 
-        if df is None or df.empty:
-            raise ValueError(f"akshare 未返回 {code} 的数据")
+            if df is None or df.empty:
+                raise ValueError(f"akshare 未返回 {code} 的数据")
 
-        # 标准化列名（兼容不同版本的 akshare）
-        col_map = {
-            "日期": "date", "date": "date",
-            "开盘": "open", "open": "open",
-            "最高": "high", "high": "high",
-            "最低": "low", "low": "low",
-            "收盘": "close", "close": "close",
-            "成交量": "volume", "volume": "volume", "成交数量": "volume",
-        }
-        df.rename(columns=col_map, inplace=True)
+            # 标准化列名（兼容不同版本的 akshare）
+            col_map = {
+                "日期": "date", "date": "date",
+                "开盘": "open", "open": "open",
+                "最高": "high", "high": "high",
+                "最低": "low", "low": "low",
+                "收盘": "close", "close": "close",
+                "成交量": "volume", "volume": "volume", "成交数量": "volume",
+            }
+            df.rename(columns=col_map, inplace=True)
 
-        # 保留唯一列（去重）
-        df = df.loc[:, ~df.columns.duplicated()].copy()
+            df = df.loc[:, ~df.columns.duplicated()].copy()
 
-        # 确保所需列存在
-        required_cols = ["date", "open", "high", "low", "close", "volume"]
-        for c in required_cols:
-            if c not in df.columns:
-                if c == "volume":
-                    df[c] = 0.0
-                else:
-                    raise ValueError(f"缺少必要列: {c}，实际列: {df.columns.tolist()}")
+            required_cols = ["date", "open", "high", "low", "close", "volume"]
+            for c in required_cols:
+                if c not in df.columns:
+                    if c == "volume":
+                        df[c] = 0.0
+                    else:
+                        raise ValueError(f"缺少必要列: {c}，实际列: {df.columns.tolist()}")
 
-        df = df[required_cols].copy()
-        df["date"] = pd.to_datetime(df["date"])
-        df.set_index("date", inplace=True)
-        df.sort_index(inplace=True)
-        df.dropna(subset=["close"], inplace=True)
+            df = df[required_cols].copy()
+            df["date"] = pd.to_datetime(df["date"])
+            df.set_index("date", inplace=True)
+            df.sort_index(inplace=True)
+            df.dropna(subset=["close"], inplace=True)
 
-        logger.info(f"成功获取 {code}，共 {len(df)} 条记录")
-        return df
+            logger.info(f"成功获取 {code}，共 {len(df)} 条记录")
+            return df
 
-    except Exception as e:
-        logger.error(f"获取 {code} 数据失败: {e}")
-        raise
+        except Exception as e:
+            logger.error(f"获取 {code} 数据失败: {e}")
+            raise
 
 
 def get_etf_data(code: str, force_refresh: bool = False) -> pd.DataFrame:
@@ -203,53 +218,46 @@ def get_etf_data(code: str, force_refresh: bool = False) -> pd.DataFrame:
 def search_etf(keyword: str) -> list[dict]:
     """
     搜索 ETF
-
-    Args:
-        keyword: 搜索关键词（代码或名称）
-
-    Returns:
-        [{"code": "513500", "name": "标普500ETF", "type": "QDII"}, ...]
     """
-    try:
-        import akshare as ak
+    with _no_proxy():
+        try:
+            import akshare as ak
 
-        # 获取所有 ETF 列表
-        df = ak.fund_etf_category_sina(symbol="ETF基金")
-        if df is None or df.empty:
-            return []
+            df = ak.fund_etf_category_sina(symbol="ETF基金")
+            if df is None or df.empty:
+                return []
 
-        # 搜索匹配
-        keyword_lower = keyword.lower()
-        mask = df["名称"].str.contains(keyword, case=False, na=False) | df["代码"].str.contains(
-            keyword, case=False, na=False
-        )
-        matched = df[mask].head(20)
-
-        results = []
-        for _, row in matched.iterrows():
-            results.append(
-                {
-                    "code": str(row["代码"]),
-                    "name": str(row["名称"]),
-                }
+            keyword_lower = keyword.lower()
+            mask = df["名称"].str.contains(keyword, case=False, na=False) | df["代码"].str.contains(
+                keyword, case=False, na=False
             )
-        return results
-    except Exception as e:
-        logger.warning(f"ETF 搜索失败: {e}")
-        # 静默降级：返回空列表，前端用预设列表
-        return []
+            matched = df[mask].head(20)
+
+            results = []
+            for _, row in matched.iterrows():
+                results.append(
+                    {
+                        "code": str(row["代码"]),
+                        "name": str(row["名称"]),
+                    }
+                )
+            return results
+        except Exception as e:
+            logger.warning(f"ETF 搜索失败: {e}")
+            return []
 
 
 def get_etf_name(code: str) -> str:
     """获取 ETF 名称"""
-    try:
-        import akshare as ak
+    with _no_proxy():
+        try:
+            import akshare as ak
 
-        df = ak.fund_etf_category_sina(symbol="ETF基金")
-        if df is not None and not df.empty:
-            row = df[df["代码"] == code]
-            if not row.empty:
-                return str(row.iloc[0]["名称"])
-    except Exception:
-        pass
+            df = ak.fund_etf_category_sina(symbol="ETF基金")
+            if df is not None and not df.empty:
+                row = df[df["代码"] == code]
+                if not row.empty:
+                    return str(row.iloc[0]["名称"])
+        except Exception:
+            pass
     return f"ETF {code}"
