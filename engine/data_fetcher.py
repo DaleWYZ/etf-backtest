@@ -3,6 +3,7 @@
 import os
 import sqlite3
 import logging
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 import pandas as pd
@@ -14,21 +15,71 @@ CACHE_DIR = os.path.join(os.path.expanduser("~"), ".etf_backtest")
 CACHE_DB = os.path.join(CACHE_DIR, "etf_cache.db")
 CACHE_TTL_HOURS = 24  # 缓存有效期
 
-# 需要清除的代理环境变量（避免走不可用的本地代理）
-_PROXY_ENV_VARS = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"]
+# 需要清除的代理环境变量
+_PROXY_ENV_VARS = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"]
 
 
 @contextmanager
-def _no_proxy():
-    """临时清除代理环境变量（akshare/requests 会读取这些变量）"""
+def _no_proxy_and_retry():
+    """临时清除代理环境变量，并配置 requests 重试"""
     saved = {}
     for var in _PROXY_ENV_VARS:
         if var in os.environ:
             saved[var] = os.environ.pop(var)
+
+    # 确保不走代理
+    os.environ["NO_PROXY"] = "*"
+
     try:
+        # 给 urllib3/requests 添加重试
+        _patch_requests_for_retry()
         yield
     finally:
         os.environ.update(saved)
+        if "NO_PROXY" not in saved:
+            os.environ.pop("NO_PROXY", None)
+
+
+def _patch_requests_for_retry():
+    """给 requests 适配器添加重试逻辑"""
+    try:
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        import requests
+
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        session.trust_env = False  # 不读取系统代理设置
+
+        # 替换 akshare 内部可能使用的 requests 全局配置
+        import requests as req
+        req.adapters.HTTPAdapter = lambda *a, **kw: adapter
+    except Exception:
+        pass  # 静默处理，不影响主流程
+
+
+def _retry_fetch(func, *args, max_retries: int = 3, **kwargs):
+    """带重试的调用"""
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                wait = (attempt + 1) * 2
+                logger.warning(f"请求失败 (第{attempt+1}次): {e}，{wait}秒后重试...")
+                time.sleep(wait)
+            else:
+                raise last_error
 
 
 def _ensure_cache_dir():
@@ -127,7 +178,7 @@ def _save_to_cache(code: str, df: pd.DataFrame):
 
 def _fetch_from_akshare(code: str) -> pd.DataFrame:
     """从 akshare 拉取 ETF 日线数据"""
-    with _no_proxy():
+    with _no_proxy_and_retry():
         try:
             import akshare as ak
 
@@ -219,7 +270,7 @@ def search_etf(keyword: str) -> list[dict]:
     """
     搜索 ETF
     """
-    with _no_proxy():
+    with _no_proxy_and_retry():
         try:
             import akshare as ak
 
@@ -249,7 +300,7 @@ def search_etf(keyword: str) -> list[dict]:
 
 def get_etf_name(code: str) -> str:
     """获取 ETF 名称"""
-    with _no_proxy():
+    with _no_proxy_and_retry():
         try:
             import akshare as ak
 
