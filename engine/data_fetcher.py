@@ -165,11 +165,19 @@ def _fetch_from_akshare(code: str) -> pd.DataFrame:
     with _no_proxy_session():
         import akshare as ak
 
-        # 数据源列表：(名称, 函数, 参数)
+        # 数据源列表：按优先级依次尝试
         sources = [
             (
-                "东方财富",
+                "东方财富-ETF",
                 lambda: ak.fund_etf_hist_em(symbol=code, period="daily", adjust="qfq"),
+            ),
+            (
+                "东方财富-A股",
+                lambda: ak.stock_zh_a_hist(
+                    symbol=code, period="daily",
+                    start_date="19700101", end_date="20991231",
+                    adjust="qfq"
+                ),
             ),
             (
                 "新浪财经",
@@ -201,7 +209,7 @@ def _fetch_from_akshare(code: str) -> pd.DataFrame:
 
         # 所有数据源都失败
         raise RuntimeError(
-            f"无法获取 {code} 的数据。已尝试: 东方财富、新浪财经。\n"
+            f"无法获取 {code} 的数据，已尝试3个数据源均失败。\n"
             f"请确认: 1) 网络可正常访问互联网  2) ETF代码 {code} 正确\n"
             f"最后的错误: {type(last_error).__name__}: {last_error}"
         )
