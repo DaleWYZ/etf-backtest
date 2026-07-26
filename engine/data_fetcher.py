@@ -21,65 +21,18 @@ _PROXY_ENV_VARS = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "AL
 
 @contextmanager
 def _no_proxy_and_retry():
-    """临时清除代理环境变量，并配置 requests 重试"""
+    """临时清除代理环境变量"""
     saved = {}
     for var in _PROXY_ENV_VARS:
         if var in os.environ:
             saved[var] = os.environ.pop(var)
-
-    # 确保不走代理
     os.environ["NO_PROXY"] = "*"
-
     try:
-        # 给 urllib3/requests 添加重试
-        _patch_requests_for_retry()
         yield
     finally:
         os.environ.update(saved)
         if "NO_PROXY" not in saved:
             os.environ.pop("NO_PROXY", None)
-
-
-def _patch_requests_for_retry():
-    """给 requests 适配器添加重试逻辑"""
-    try:
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
-        import requests
-
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET", "POST"],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        session.trust_env = False  # 不读取系统代理设置
-
-        # 替换 akshare 内部可能使用的 requests 全局配置
-        import requests as req
-        req.adapters.HTTPAdapter = lambda *a, **kw: adapter
-    except Exception:
-        pass  # 静默处理，不影响主流程
-
-
-def _retry_fetch(func, *args, max_retries: int = 3, **kwargs):
-    """带重试的调用"""
-    last_error = None
-    for attempt in range(max_retries):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            last_error = e
-            if attempt < max_retries - 1:
-                wait = (attempt + 1) * 2
-                logger.warning(f"请求失败 (第{attempt+1}次): {e}，{wait}秒后重试...")
-                time.sleep(wait)
-            else:
-                raise last_error
 
 
 def _ensure_cache_dir():
@@ -177,51 +130,58 @@ def _save_to_cache(code: str, df: pd.DataFrame):
 
 
 def _fetch_from_akshare(code: str) -> pd.DataFrame:
-    """从 akshare 拉取 ETF 日线数据"""
+    """从 akshare 拉取 ETF 日线数据（带重试）"""
     with _no_proxy_and_retry():
-        try:
-            import akshare as ak
+        import akshare as ak
 
-            logger.info(f"正在从 akshare 获取 {code} 的数据...")
+        last_error = None
+        for attempt in range(3):
+            try:
+                logger.info(f"正在从 akshare 获取 {code} 的数据...")
 
-            df = ak.fund_etf_hist_em(symbol=code, period="daily", adjust="qfq")
+                df = ak.fund_etf_hist_em(symbol=code, period="daily", adjust="qfq")
 
-            if df is None or df.empty:
-                raise ValueError(f"akshare 未返回 {code} 的数据")
+                if df is None or df.empty:
+                    raise ValueError(f"akshare 未返回 {code} 的数据")
 
-            # 标准化列名（兼容不同版本的 akshare）
-            col_map = {
-                "日期": "date", "date": "date",
-                "开盘": "open", "open": "open",
-                "最高": "high", "high": "high",
-                "最低": "low", "low": "low",
-                "收盘": "close", "close": "close",
-                "成交量": "volume", "volume": "volume", "成交数量": "volume",
-            }
-            df.rename(columns=col_map, inplace=True)
+                # 标准化列名
+                col_map = {
+                    "日期": "date", "date": "date",
+                    "开盘": "open", "open": "open",
+                    "最高": "high", "high": "high",
+                    "最低": "low", "low": "low",
+                    "收盘": "close", "close": "close",
+                    "成交量": "volume", "volume": "volume", "成交数量": "volume",
+                }
+                df.rename(columns=col_map, inplace=True)
+                df = df.loc[:, ~df.columns.duplicated()].copy()
 
-            df = df.loc[:, ~df.columns.duplicated()].copy()
+                required_cols = ["date", "open", "high", "low", "close", "volume"]
+                for c in required_cols:
+                    if c not in df.columns:
+                        if c == "volume":
+                            df[c] = 0.0
+                        else:
+                            raise ValueError(f"缺少必要列: {c}，实际列: {df.columns.tolist()}")
 
-            required_cols = ["date", "open", "high", "low", "close", "volume"]
-            for c in required_cols:
-                if c not in df.columns:
-                    if c == "volume":
-                        df[c] = 0.0
-                    else:
-                        raise ValueError(f"缺少必要列: {c}，实际列: {df.columns.tolist()}")
+                df = df[required_cols].copy()
+                df["date"] = pd.to_datetime(df["date"])
+                df.set_index("date", inplace=True)
+                df.sort_index(inplace=True)
+                df.dropna(subset=["close"], inplace=True)
 
-            df = df[required_cols].copy()
-            df["date"] = pd.to_datetime(df["date"])
-            df.set_index("date", inplace=True)
-            df.sort_index(inplace=True)
-            df.dropna(subset=["close"], inplace=True)
+                logger.info(f"成功获取 {code}，共 {len(df)} 条记录")
+                return df
 
-            logger.info(f"成功获取 {code}，共 {len(df)} 条记录")
-            return df
+            except Exception as e:
+                last_error = e
+                if attempt < 2:
+                    wait = (attempt + 1) * 2
+                    logger.warning(f"请求失败 (第{attempt+1}/3次): {e}，{wait}秒后重试...")
+                    time.sleep(wait)
 
-        except Exception as e:
-            logger.error(f"获取 {code} 数据失败: {e}")
-            raise
+        logger.error(f"获取 {code} 数据失败 (已重试3次): {last_error}")
+        raise last_error
 
 
 def get_etf_data(code: str, force_refresh: bool = False) -> pd.DataFrame:
