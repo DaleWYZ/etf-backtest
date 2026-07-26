@@ -8,10 +8,16 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
+    <!-- 顶层：header + 主区域 -->
+    <div class="app-wrapper">
     <!-- 顶部标题栏 -->
     <header class="app-header">
         <h1>📊 ETF 定投回测工具</h1>
         <span class="version">v1.0</span>
+        <div class="header-spacer"></div>
+        <button id="log-toggle-btn" class="btn btn-log" title="查看日志">
+            📋 日志
+        </button>
     </header>
 
     <div class="main-container">
@@ -198,6 +204,25 @@
             </div>
         </main>
     </div>
+
+    <!-- 日志面板（右侧滑出） -->
+    <div id="log-panel" class="log-panel">
+        <div class="log-panel-header">
+            <h3>📋 运行日志</h3>
+            <div class="log-panel-actions">
+                <button id="log-clear-btn" class="btn btn-sm btn-outline">清空</button>
+                <button id="log-close-btn" class="btn btn-sm btn-outline">✕</button>
+            </div>
+        </div>
+        <div id="log-entries" class="log-entries">
+            <div class="log-empty">等待日志输出...</div>
+        </div>
+    </div>
+
+    <!-- 日志面板遮罩 -->
+    <div id="log-overlay" class="log-overlay hidden"></div>
+
+    </div><!-- .app-wrapper -->
 
     <script src="/static/app.js"></script>
 </body>

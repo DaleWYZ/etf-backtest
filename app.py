@@ -3,7 +3,7 @@
 import os
 import sys
 import logging
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, Response, request, stream_with_context
 
 # 配置日志
 logging.basicConfig(
@@ -14,9 +14,21 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# 安装日志缓冲处理器（用于前端实时查看）
+from engine.log_handler import install_handler, sse_generator
+_log_handler = None
+
+
+def _ensure_log_handler():
+    global _log_handler
+    if _log_handler is None:
+        _log_handler = install_handler()
+
 
 def create_app() -> Flask:
     """创建 Flask 应用"""
+    _ensure_log_handler()
+
     static_dir = get_static_dir()
 
     app = Flask(
@@ -41,6 +53,25 @@ def create_app() -> Flask:
     @app.route("/api/health")
     def health():
         return {"status": "ok"}
+
+    # 日志 SSE 流
+    @app.route("/api/logs/stream")
+    def log_stream():
+        last_id = request.headers.get("Last-Event-ID")
+        if last_id:
+            try:
+                last_id = int(last_id)
+            except ValueError:
+                last_id = None
+        return Response(
+            stream_with_context(sse_generator(last_id)),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     return app
 

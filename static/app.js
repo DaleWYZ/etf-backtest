@@ -231,6 +231,9 @@ function initEventListeners() {
     // 开始回测
     document.getElementById("run-btn").addEventListener("click", runAllBacktests);
 
+    // 日志面板
+    initLogPanel();
+
     // 点击结果面板空白处关闭搜索结果
     document.addEventListener("click", (e) => {
         const resultsDiv = document.getElementById("search-results");
@@ -665,4 +668,170 @@ function renderCompareTable() {
         "hidden",
         results.length <= 1
     );
+}
+
+// ===== 日志面板 =====
+const logState = {
+    open: false,
+    eventSource: null,
+    lastId: null,
+    entries: [],
+};
+
+function initLogPanel() {
+    const toggleBtn = document.getElementById("log-toggle-btn");
+    const closeBtn = document.getElementById("log-close-btn");
+    const clearBtn = document.getElementById("log-clear-btn");
+    const overlay = document.getElementById("log-overlay");
+
+    toggleBtn.addEventListener("click", toggleLogPanel);
+    closeBtn.addEventListener("click", closeLogPanel);
+    overlay.addEventListener("click", closeLogPanel);
+    clearBtn.addEventListener("click", clearLogs);
+
+    // 首次打开时建立 SSE 连接
+    // 提前建立，这样打开面板时已经有历史日志
+    connectLogSSE();
+}
+
+function toggleLogPanel() {
+    if (logState.open) {
+        closeLogPanel();
+    } else {
+        openLogPanel();
+    }
+}
+
+function openLogPanel() {
+    const panel = document.getElementById("log-panel");
+    const overlay = document.getElementById("log-overlay");
+    const toggleBtn = document.getElementById("log-toggle-btn");
+
+    panel.classList.add("open");
+    overlay.classList.remove("hidden");
+    toggleBtn.classList.add("active");
+    logState.open = true;
+
+    // 确保 SSE 连接
+    if (!logState.eventSource || logState.eventSource.readyState === EventSource.CLOSED) {
+        connectLogSSE();
+    }
+
+    // 滚动到底部
+    scrollLogToBottom();
+}
+
+function closeLogPanel() {
+    const panel = document.getElementById("log-panel");
+    const overlay = document.getElementById("log-overlay");
+    const toggleBtn = document.getElementById("log-toggle-btn");
+
+    panel.classList.remove("open");
+    overlay.classList.add("hidden");
+    toggleBtn.classList.remove("active");
+    logState.open = false;
+}
+
+function clearLogs() {
+    logState.entries = [];
+    logState.lastId = null;
+    const container = document.getElementById("log-entries");
+    container.innerHTML = '<div class="log-empty">日志已清空，等待新日志...</div>';
+}
+
+function connectLogSSE() {
+    // 关闭之前的连接
+    if (logState.eventSource) {
+        logState.eventSource.close();
+    }
+
+    const es = new EventSource("/api/logs/stream");
+    logState.eventSource = es;
+
+    es.onmessage = function (event) {
+        const text = event.data;
+        const id = parseInt(event.lastEventId);
+        if (!isNaN(id)) logState.lastId = id;
+
+        // 解析日志行: [HH:MM:SS] [LEVEL] [name] message
+        const parsed = parseLogLine(text);
+
+        logState.entries.push(parsed);
+        appendLogEntry(parsed);
+    };
+
+    es.onerror = function () {
+        // SSE 连接断开会自动重连，不需要手动处理
+    };
+
+    es.onopen = function () {
+        // 连接成功
+    };
+}
+
+function parseLogLine(text) {
+    // 格式: [HH:MM:SS] [LEVEL] [name] message
+    const match = text.match(/^\[(\d{2}:\d{2}:\d{2})\]\s+\[(\w+)\]\s+\[([^\]]+)\]\s+(.*)$/);
+    if (match) {
+        return {
+            time: match[1],
+            level: match[2],
+            name: match[3],
+            message: match[4],
+        };
+    }
+    // 无法解析的原始文本
+    return {
+        time: "",
+        level: "DEBUG",
+        name: "",
+        message: text,
+    };
+}
+
+function appendLogEntry(parsed) {
+    const container = document.getElementById("log-entries");
+
+    // 移除空状态提示
+    const emptyEl = container.querySelector(".log-empty");
+    if (emptyEl) emptyEl.remove();
+
+    const el = document.createElement("div");
+    el.className = `log-entry log-${parsed.level}`;
+
+    const parts = [];
+    if (parsed.time) parts.push(`<span class="log-time">${parsed.time}</span>`);
+    parts.push(`<span class="log-level">[${parsed.level}]</span>`);
+    if (parsed.name) parts.push(`<span class="log-name">[${parsed.name}]</span>`);
+    parts.push(escapeHtml(parsed.message));
+
+    el.innerHTML = parts.join(" ");
+    container.appendChild(el);
+
+    // 限制日志条目数量
+    const maxEntries = 500;
+    while (container.children.length > maxEntries) {
+        container.removeChild(container.firstChild);
+    }
+
+    // 自动滚动（仅当面板打开且用户在底部附近时）
+    if (logState.open) {
+        const scrollBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+        if (scrollBottom < 60) {
+            container.scrollTop = container.scrollHeight;
+        }
+    }
+}
+
+function scrollLogToBottom() {
+    const container = document.getElementById("log-entries");
+    setTimeout(() => {
+        container.scrollTop = container.scrollHeight;
+    }, 100);
+}
+
+function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
 }
