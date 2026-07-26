@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ETF 定投回测工具</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- 顶部标题栏 -->
+    <header class="app-header">
+        <h1>📊 ETF 定投回测工具</h1>
+        <span class="version">v1.0</span>
+    </header>
+
+    <div class="main-container">
+        <!-- 左侧配置面板 -->
+        <aside class="config-panel">
+            <!-- ETF 选择 -->
+            <section class="config-section">
+                <h3>🔍 ETF 选择</h3>
+                <div id="etf-presets"></div>
+
+                <div class="custom-etf">
+                    <label>自定义代码</label>
+                    <div class="input-row">
+                        <input type="text" id="custom-code" placeholder="输入ETF代码，如513500" maxlength="8">
+                        <button id="search-btn" class="btn btn-sm" title="搜索ETF">搜索</button>
+                    </div>
+                    <div id="search-results" class="search-results hidden"></div>
+                </div>
+
+                <div id="selected-etfs" class="selected-etfs">
+                    <div class="chip" data-code="513500">
+                        标普500ETF(513500) <span class="chip-remove">&times;</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 回测时间 -->
+            <section class="config-section">
+                <h3>📅 回测时间</h3>
+                <div class="date-shortcuts">
+                    <button class="btn btn-outline shortcut-btn" data-years="1">1年</button>
+                    <button class="btn btn-outline shortcut-btn" data-years="3">3年</button>
+                    <button class="btn btn-outline shortcut-btn" data-years="5">5年</button>
+                    <button class="btn btn-outline shortcut-btn" data-years="10">10年</button>
+                    <button class="btn btn-outline shortcut-btn" data-years="all">全部</button>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>开始日期</label>
+                        <input type="date" id="start-date" value="2020-01-02">
+                    </div>
+                    <div class="form-group">
+                        <label>结束日期</label>
+                        <input type="date" id="end-date">
+                    </div>
+                </div>
+            </section>
+
+            <!-- 定投设置 -->
+            <section class="config-section">
+                <h3>💰 定投设置</h3>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>每次投入金额 (元)</label>
+                        <input type="number" id="amount" value="100" min="1" step="1">
+                    </div>
+                    <div class="form-group">
+                        <label>定投频率</label>
+                        <select id="frequency">
+                            <option value="daily">每日 (交易日)</option>
+                            <option value="weekly">每周</option>
+                            <option value="monthly">每月</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row" id="weekly-options" style="display:none;">
+                    <div class="form-group">
+                        <label>每周定投日</label>
+                        <select id="weekday">
+                            <option value="1">周一</option>
+                            <option value="2">周二</option>
+                            <option value="3">周三</option>
+                            <option value="4">周四</option>
+                            <option value="5">周五</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row" id="monthly-options" style="display:none;">
+                    <div class="form-group">
+                        <label>每月定投日</label>
+                        <select id="month-day"></select>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>买入手续费率</label>
+                        <div class="fee-input-group">
+                            <input type="number" id="fee-rate" value="0.015" min="0" max="1" step="0.001">
+                            <span class="fee-unit">%</span>
+                        </div>
+                        <span class="hint">默认万1.5 (单边买入)</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 操作按钮 -->
+            <div class="action-buttons">
+                <button id="run-btn" class="btn btn-primary btn-block">🚀 开始回测</button>
+                <button id="stop-btn" class="btn btn-danger btn-block hidden">⏹ 停止</button>
+            </div>
+
+            <div id="progress-bar" class="progress hidden">
+                <div class="progress-fill"></div>
+            </div>
+            <div id="status-msg" class="status-msg"></div>
+        </aside>
+
+        <!-- 右侧结果面板 -->
+        <main class="result-panel">
+            <!-- 空状态 -->
+            <div id="empty-state" class="empty-state">
+                <div class="empty-icon">📈</div>
+                <h2>开始你的 ETF 定投回测</h2>
+                <p>选择 ETF、设定时间和参数，点击「开始回测」查看结果</p>
+            </div>
+
+            <!-- 结果 Tab 切换（多ETF时出现） -->
+            <div id="result-tabs" class="result-tabs hidden"></div>
+
+            <!-- 结果内容 -->
+            <div id="result-content" class="hidden">
+                <!-- 指标卡片 -->
+                <section class="metrics-cards" id="metrics-cards"></section>
+
+                <!-- 年度明细表 -->
+                <section class="annual-section">
+                    <h3>📋 年度收益明细</h3>
+                    <div class="table-wrapper">
+                        <table id="annual-table">
+                            <thead>
+                                <tr>
+                                    <th>年份</th>
+                                    <th>当年投入</th>
+                                    <th>年初市值</th>
+                                    <th>年末市值</th>
+                                    <th>当年收益</th>
+                                    <th>收益率</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- 收益曲线 -->
+                <section class="chart-section">
+                    <h3>📈 收益曲线</h3>
+                    <div class="chart-wrapper">
+                        <canvas id="return-chart"></canvas>
+                    </div>
+                </section>
+            </div>
+
+            <!-- 对比图表（多选 ETF 时） -->
+            <div id="compare-content" class="hidden">
+                <section class="chart-section">
+                    <h3>📊 多ETF 对比 (市值走势)</h3>
+                    <div class="chart-wrapper">
+                        <canvas id="compare-chart"></canvas>
+                    </div>
+                </section>
+                <section class="annual-section">
+                    <h3>📋 对比总览</h3>
+                    <div class="table-wrapper">
+                        <table id="compare-table">
+                            <thead>
+                                <tr>
+                                    <th>ETF</th>
+                                    <th>总投入</th>
+                                    <th>最终市值</th>
+                                    <th>总收益</th>
+                                    <th>总收益率</th>
+                                    <th>CAGR</th>
+                                    <th>最大回撤</th>
+                                    <th>夏普比率</th>
+                                    <th>XIRR</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
