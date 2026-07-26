@@ -6,33 +6,35 @@ import logging
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from unittest.mock import patch
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# 缓存数据库路径（放在用户目录下，打包后也能正常读写）
+# 缓存数据库路径
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".etf_backtest")
 CACHE_DB = os.path.join(CACHE_DIR, "etf_cache.db")
-CACHE_TTL_HOURS = 24  # 缓存有效期
-
-# 需要清除的代理环境变量
-_PROXY_ENV_VARS = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"]
+CACHE_TTL_HOURS = 24
 
 
 @contextmanager
-def _no_proxy_and_retry():
-    """临时清除代理环境变量"""
-    saved = {}
-    for var in _PROXY_ENV_VARS:
-        if var in os.environ:
-            saved[var] = os.environ.pop(var)
-    os.environ["NO_PROXY"] = "*"
-    try:
+def _no_proxy_session():
+    """
+    临时让所有 requests.Session 忽略系统代理。
+    不修改环境变量，不影响用户浏览器代理。
+    """
+    import requests as _requests
+
+    OriginalSession = _requests.Session
+
+    class _NoProxySession(OriginalSession):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.trust_env = False  # 不读取系统代理
+            self.proxies.clear()
+
+    with patch("requests.Session", _NoProxySession):
         yield
-    finally:
-        os.environ.update(saved)
-        if "NO_PROXY" not in saved:
-            os.environ.pop("NO_PROXY", None)
 
 
 def _ensure_cache_dir():
@@ -160,7 +162,7 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def _fetch_from_akshare(code: str) -> pd.DataFrame:
     """从 akshare 拉取 ETF 日线数据（多数据源自动切换 + 重试）"""
-    with _no_proxy_and_retry():
+    with _no_proxy_session():
         import akshare as ak
 
         # 数据源列表：(名称, 函数, 参数)
@@ -251,7 +253,7 @@ def search_etf(keyword: str) -> list[dict]:
     """
     搜索 ETF
     """
-    with _no_proxy_and_retry():
+    with _no_proxy_session():
         try:
             import akshare as ak
 
@@ -281,7 +283,7 @@ def search_etf(keyword: str) -> list[dict]:
 
 def get_etf_name(code: str) -> str:
     """获取 ETF 名称"""
-    with _no_proxy_and_retry():
+    with _no_proxy_session():
         try:
             import akshare as ak
 
