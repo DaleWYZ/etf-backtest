@@ -73,6 +73,18 @@ def create_app() -> Flask:
             },
         )
 
+    # 退出程序（浏览器关闭时前端调用）
+    @app.route("/api/shutdown", methods=["POST"])
+    def shutdown():
+        logger.info("收到浏览器关闭信号，程序退出")
+        import threading
+        def delayed_exit():
+            import time
+            time.sleep(0.5)
+            os._exit(0)
+        threading.Thread(target=delayed_exit, daemon=True).start()
+        return {"status": "ok"}
+
     return app
 
 

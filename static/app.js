@@ -19,6 +19,11 @@ document.addEventListener("DOMContentLoaded", () => {
     initEventListeners();
     // 默认选中标普500ETF
     toggleEtf("513500", "标普500ETF(博时)");
+
+    // 浏览器关闭时通知后端退出
+    window.addEventListener("beforeunload", () => {
+        navigator.sendBeacon("/api/shutdown");
+    });
 });
 
 function initDateDefaults() {
