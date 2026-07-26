@@ -36,6 +36,7 @@ def build():
         "--name", "ETF回测工具",
         "--add-data", f"static{sep}static",
         "--collect-all", "akshare",
+        "--collect-all", "py_mini_racer",
         "--clean",
         "--noconfirm",
         "main.py",

@@ -817,3 +817,39 @@ tbody tr:hover {
     background: var(--primary);
     border-color: var(--primary);
 }
+
+/* 日志按钮上的错误计数角标 */
+.log-badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    background: var(--danger);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    min-width: 18px;
+    height: 18px;
+    line-height: 18px;
+    border-radius: 9px;
+    text-align: center;
+    padding: 0 5px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.log-badge.hidden {
+    display: none;
+}
+
+.btn-log {
+    position: relative;
+}
+
+/* 错误时日志按钮闪烁 */
+.btn-log.has-error {
+    animation: log-btn-pulse 0.6s ease-in-out 3;
+}
+
+@keyframes log-btn-pulse {
+    0%, 100% { box-shadow: none; }
+    50% { box-shadow: 0 0 8px 2px rgba(231, 76, 60, 0.6); }
+}

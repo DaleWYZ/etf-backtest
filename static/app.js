@@ -337,6 +337,9 @@ function showStatus(msg, type) {
     el.textContent = msg;
     el.className = "status-msg";
     if (type) el.classList.add(type);
+    if (type === "error") {
+        el.textContent = msg + "  点击右上角 📋日志 查看详情";
+    }
 }
 
 function clearResults() {
@@ -681,6 +684,8 @@ const logState = {
     eventSource: null,
     lastId: null,
     entries: [],
+    errorCount: 0,
+    warnCount: 0,
 };
 
 function initLogPanel() {
@@ -694,9 +699,24 @@ function initLogPanel() {
     overlay.addEventListener("click", closeLogPanel);
     clearBtn.addEventListener("click", clearLogs);
 
-    // 首次打开时建立 SSE 连接
-    // 提前建立，这样打开面板时已经有历史日志
+    // 页面加载时立即建立 SSE 连接
     connectLogSSE();
+}
+
+function updateLogBadge() {
+    const badge = document.getElementById("log-badge");
+    const total = logState.errorCount + logState.warnCount;
+    if (total > 0 && !logState.open) {
+        badge.textContent = total > 99 ? "99+" : total;
+        badge.classList.remove("hidden");
+        if (logState.errorCount > 0) {
+            badge.style.background = "var(--danger)";
+        } else {
+            badge.style.background = "var(--warning)";
+        }
+    } else {
+        badge.classList.add("hidden");
+    }
 }
 
 function toggleLogPanel() {
@@ -715,6 +735,10 @@ function openLogPanel() {
     panel.classList.add("open");
     overlay.classList.remove("hidden");
     toggleBtn.classList.add("active");
+    // 打开面板时清除角标
+    logState.errorCount = 0;
+    logState.warnCount = 0;
+    updateLogBadge();
     logState.open = true;
 
     // 确保 SSE 连接
@@ -722,7 +746,6 @@ function openLogPanel() {
         connectLogSSE();
     }
 
-    // 滚动到底部
     scrollLogToBottom();
 }
 
@@ -740,12 +763,14 @@ function closeLogPanel() {
 function clearLogs() {
     logState.entries = [];
     logState.lastId = null;
+    logState.errorCount = 0;
+    logState.warnCount = 0;
+    updateLogBadge();
     const container = document.getElementById("log-entries");
     container.innerHTML = '<div class="log-empty">日志已清空，等待新日志...</div>';
 }
 
 function connectLogSSE() {
-    // 关闭之前的连接
     if (logState.eventSource) {
         logState.eventSource.close();
     }
@@ -758,19 +783,26 @@ function connectLogSSE() {
         const id = parseInt(event.lastEventId);
         if (!isNaN(id)) logState.lastId = id;
 
-        // 解析日志行: [HH:MM:SS] [LEVEL] [name] message
         const parsed = parseLogLine(text);
+
+        // 统计错误和警告
+        if (parsed.level === "ERROR") {
+            logState.errorCount++;
+            // 有新错误时闪烁按钮
+            const btn = document.getElementById("log-toggle-btn");
+            btn.classList.add("has-error");
+            setTimeout(() => btn.classList.remove("has-error"), 2000);
+        } else if (parsed.level === "WARNING") {
+            logState.warnCount++;
+        }
 
         logState.entries.push(parsed);
         appendLogEntry(parsed);
+        updateLogBadge();
     };
 
     es.onerror = function () {
-        // SSE 连接断开会自动重连，不需要手动处理
-    };
-
-    es.onopen = function () {
-        // 连接成功
+        // SSE 自动重连
     };
 }
 
